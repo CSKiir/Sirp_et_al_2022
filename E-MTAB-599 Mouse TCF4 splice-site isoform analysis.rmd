@@ -84,7 +84,7 @@ metadata <- fread("./DATA/E-MTAB-599_SraRunTable.txt")
 ```
 
 ```{r}
-#Configure metadata unformation
+#Configure metadata information
 metadata[, Run_ID := Run]
 metadata <- metadata[order(Run_ID)]
 metadata[, AvgSpotLen := as.factor(AvgSpotLen)]
