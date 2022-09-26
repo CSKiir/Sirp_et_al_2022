@@ -120,7 +120,7 @@ TCF4_total <- TCF4_total[Isoform != "TOTAL_SJ"]
 ```
 
 ```{r}
-#Metaanalysis data compiler
+#Meta-analysis data
 #https://www.nature.com/articles/nature10413#MOESM71
 #Keane, T., Goodstadt, L., Danecek, P. et al. (2011)
 #Missing information from metadata : 8 weeks old (P56) and female F1 offspring
