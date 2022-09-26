@@ -1,0 +1,136 @@
+---
+title: "Splice-site level analysis: E-MTAB-599"
+---
+
+```{r}
+#Load in required library
+library(data.table)
+```
+
+```{r}
+Data_compiler <- function (filename, annotation, extended){
+
+print("Reading in files")
+  
+dt <- fread(filename) #RNA-seq raw count table (STAR output .jcount file)
+isoforms <- fread(annotation) #Splice-site annotation file
+dt_ext <- fread(extended) #Same RNA-seq analysis done with manually curated extended exons (4c and 7bII) (FeatureCounts output)
+
+#Fix column names (byproduct of our analysis pipeline)
+colnames(dt) <- gsub(x = colnames(dt), pattern="./Alignment/2pass/|.Aligned.sortedByCoord.out.bam", replacement = "", fixed=FALSE)
+colnames(dt_ext) <- gsub(x = colnames(dt_ext), pattern="./|.Aligned.sortedByCoord.out.bam", replacement = "", fixed=FALSE)
+setnames(dt, "Site1_location","Site1_donor")
+setnames(dt, "Site2_location","Site2_acceptor")
+
+#Assign correct chromosome name where TCF4 is located, required, when shuffling input data (mouse, rat or human dataset).
+  if ('chr18' %in% dt$Site1_chr){
+    chr <- "chr18"
+    print("Using chr18 for chromosome name")
+                                }
+      else{
+      chr <- "18"
+      print("Using 18 for chromosome name")
+          }
+
+ print("Annotating TCF4 splice sites")
+  for (i in c(1:dim(isoforms)[1])){  
+  splice1 <- isoforms[i]$Site1_donor
+  splice2 <- isoforms[i]$Site2_acceptor
+  
+  dt[Site1_donor == splice1 & Site2_acceptor == splice2 & Site1_chr == chr & Site2_chr == chr, Isoform := isoforms[i]$Isoform]
+  dt[Site1_donor == splice1 & Site2_acceptor == splice2 & Site1_chr == chr & Site2_chr == chr, Exon := isoforms[i]$Exon]
+                                    }
+
+#Splits extended exon name into 2 columns
+dt_ext[, c("Isoform", "Exon") := tstrsplit(Geneid, "_")[1:2]]
+dt_ext[, Exon := paste0(Exon, "_extended")]
+
+#Combines annotated RNA-seq raw count table with extended exon table
+dt <- rbind(dt, dt_ext[, -c(1:6)], fill=TRUE)
+                            
+print("Calculating totals")
+#Calculating column totals for each sample
+num <- dim(dt)[2]-2
+totals <- dt[, colSums(.SD), .SDcols = c(9:num)]
+
+totals <- dcast(as.data.table(totals, keep.rownames = T), formula = . ~ rn, value.var = "totals")
+
+#Assign new column name and row name for the generated column totals
+colnames(totals)[1] <- "Isoform"
+totals[, Isoform := "TOTAL_SJ"]
+
+#Combine RNA-seq and total tables
+dt <- rbind(dt, totals, fill=TRUE)
+
+print("Filtering out TCF4")
+TCF4 <- dt[(!is.na(Exon) & Exon != "") |(!is.na(Isoform) & Isoform != "")] #Filter out our annotated TCF4 exons and isoforms
+
+#Convert counts into counts per million metric
+TCF4[, c(9:num) := lapply(.SD, function(x) x/x[which(TCF4$Isoform == "TOTAL_SJ")] * 1e6), .SDcols = c(9:num)]
+
+#Convert wide table to long
+TCF4 <- melt(TCF4, id.vars = c(1:8,(num + 1):(num+2)), value.name = "CPM", variable.name = "Sample")
+
+#Output generated file
+return(TCF4)
+}
+
+TCF4 <- Data_compiler("./DATA/E-MTAB-599_STAR_2pass_counts_s0.csv.jcounts.gz", #Read in raw RNA-seq data (STAR output .jcount file)
+                      "./DATA/Supplementary Table S5.csv", #Read in annotation file, in this example mouse annotation was used
+                      "./DATA/E-MTAB-599_TCF4_extended_exons.csv") #Read in 4c and 7bII extended exon raw count data (FeatureCounts output)
+
+#Read in dataset metadata
+metadata <- fread("./DATA/E-MTAB-599_SraRunTable.txt")
+```
+
+```{r}
+#Configure metadata unformation
+metadata[, Run_ID := Run]
+metadata <- metadata[order(Run_ID)]
+metadata[, AvgSpotLen := as.factor(AvgSpotLen)]
+metadata[, Tissue := as.factor(OrganismPart)]
+metadata[, Strain := as.factor(StrainOrLine)]
+metadata[, c("Accession nr.", "ID") := tstrsplit(Alias,":")]
+
+#Select required columns
+metadata <- metadata[, c("Run_ID","Accession nr.", "Strain", "Tissue", "AvgSpotLen", "Organism")]
+```
+
+```{r}
+#Merge the generated TCF4 analysis table with metadata
+TCF4 <- merge(metadata, TCF4, by.x = "Run_ID", by.y = "Sample")
+```
+
+```{r}
+#Sum technical replicates (if present)
+TCF4_total <- TCF4[, sum(CPM), by=c("Isoform","Run_ID","Accession nr.", "Strain", "Tissue", "AvgSpotLen", "Organism")]
+
+#Define exon-junctions, which are used to calculate total TCF4 levels (20-21 junction is omitted due to irregularities in exon 21) 
+TCF4_isoforms <- c("10-11","11-12","12-13","13-14","14-15","15-16","16-17","17-18","18-19","19-20")#,"20-21"
+
+#Assign total TCF4 based on TCF4_isoforms
+TCF4_total[Isoform %in% TCF4_isoforms, Isoform := "TOTAL TCF4"]
+
+#Calculate total TCF4
+TCF4_total <- TCF4_total[, mean(V1), by=c("Isoform","Run_ID","Accession nr.", "Strain", "Tissue", "AvgSpotLen", "Organism")]
+setnames(TCF4_total, "V1","CPM")
+
+#Remove column totals (no longer needed)
+TCF4_total <- TCF4_total[Isoform != "TOTAL_SJ"]
+```
+
+```{r}
+#Metaanalysis data compiler
+#https://www.nature.com/articles/nature10413#MOESM71
+#Keane, T., Goodstadt, L., Danecek, P. et al. (2011)
+#Missing information from metadata : 8 weeks old (P56) and female F1 offspring
+
+#Adding missing information
+TCF4_total[, `Data origin` :="Keane, T., Goodstadt, L., Danecek, P. et al. (2011)"]
+TCF4_total[, Sex :="Female"]
+TCF4_total[, Age :="P56"]
+TCF4_total[, Gene :="Tcf4"]
+
+TCF4_total <- TCF4_total[, c("Data origin","Accession nr.", "Run_ID", "Organism", "Strain", "Sex","Tissue","Age","Gene","Isoform", "CPM")]
+fwrite(TCF4_total, file = "./E-MTAB-599_Tcf4_isoform.tsv")
+```
